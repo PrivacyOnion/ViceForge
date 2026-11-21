@@ -22,9 +22,7 @@ std::string format_hash64(uint64_t hash64) {
     return ss.str();
 }
 
-} // namespace
-
-std::string VfsMountTable::normalize_virtual_path(std::string_view raw_path) {
+void normalize_into(std::string_view raw_path, std::string& out) {
     while (!raw_path.empty() && std::isspace(static_cast<unsigned char>(raw_path.front()))) {
         raw_path.remove_prefix(1);
     }
@@ -32,7 +30,7 @@ std::string VfsMountTable::normalize_virtual_path(std::string_view raw_path) {
         raw_path.remove_suffix(1);
     }
 
-    std::string out;
+    out.clear();
     out.reserve(raw_path.size());
     bool prev_slash = false;
     for (char c : raw_path) {
@@ -53,7 +51,49 @@ std::string VfsMountTable::normalize_virtual_path(std::string_view raw_path) {
     while (!out.empty() && out.back() == '/') {
         out.pop_back();
     }
+}
+
+} // namespace
+
+bool VfsMountTable::is_normalized_virtual_path(std::string_view path) noexcept {
+    if (path.empty()) {
+        return false;
+    }
+    if (std::isspace(static_cast<unsigned char>(path.front())) ||
+        std::isspace(static_cast<unsigned char>(path.back())) ||
+        path.front() == '/' || path.back() == '/') {
+        return false;
+    }
+    bool prev_slash = false;
+    for (unsigned char uc : path) {
+        if (uc == '\\' || (uc >= 'A' && uc <= 'Z')) {
+            return false;
+        }
+        if (uc == '/') {
+            if (prev_slash) {
+                return false;
+            }
+            prev_slash = true;
+        } else {
+            prev_slash = false;
+        }
+    }
+    return true;
+}
+
+std::string VfsMountTable::normalize_virtual_path(std::string_view raw_path) {
+    std::string out;
+    normalize_into(raw_path, out);
     return out;
+}
+
+void VfsMountTable::reserve(size_t path_count, size_t hash_count) {
+    if (path_count > 0) {
+        path_overrides_.reserve(path_count);
+    }
+    if (hash_count > 0) {
+        hash_overrides_.reserve(hash_count);
+    }
 }
 
 bool VfsMountTable::register_override(std::string_view virtual_path,
@@ -62,7 +102,7 @@ bool VfsMountTable::register_override(std::string_view virtual_path,
                                       uint32_t priority,
                                       bool pinned,
                                       std::string* error) {
-    const std::string key = normalize_virtual_path(virtual_path);
+    std::string key = normalize_virtual_path(virtual_path);
     if (key.empty() || host_file_path.empty() || owner_mod_id.empty()) {
         if (error) {
             *error = "VFS override requires non-empty virtual path, host file path, and mod id";
@@ -73,7 +113,7 @@ bool VfsMountTable::register_override(std::string_view virtual_path,
     VfsOverrideRecord incoming{key, host_file_path, std::string(owner_mod_id), priority, pinned};
     auto it = path_overrides_.find(key);
     if (it == path_overrides_.end()) {
-        path_overrides_.emplace(key, std::move(incoming));
+        path_overrides_.emplace(std::move(key), std::move(incoming));
         return true;
     }
 
@@ -139,21 +179,42 @@ bool VfsMountTable::register_hash_override(uint64_t hash64,
     return true;
 }
 
+const VfsOverrideRecord* VfsMountTable::find(std::string_view virtual_path) const {
+    if (path_overrides_.empty()) {
+        return nullptr;
+    }
+    if (is_normalized_virtual_path(virtual_path)) {
+        auto it = path_overrides_.find(virtual_path);
+        return it == path_overrides_.end() ? nullptr : &it->second;
+    }
+    thread_local std::string scratch;
+    normalize_into(virtual_path, scratch);
+    auto it = path_overrides_.find(scratch);
+    return it == path_overrides_.end() ? nullptr : &it->second;
+}
+
+const VfsHashOverrideRecord* VfsMountTable::find_hash(uint64_t hash64) const noexcept {
+    if (hash_overrides_.empty()) {
+        return nullptr;
+    }
+    auto it = hash_overrides_.find(hash64);
+    return it == hash_overrides_.end() ? nullptr : &it->second;
+}
+
 std::optional<VfsOverrideRecord> VfsMountTable::resolve(std::string_view virtual_path) const {
-    const std::string key = normalize_virtual_path(virtual_path);
-    auto it = path_overrides_.find(key);
-    if (it == path_overrides_.end()) {
+    const VfsOverrideRecord* rec = find(virtual_path);
+    if (!rec) {
         return std::nullopt;
     }
-    return it->second;
+    return *rec;
 }
 
 std::optional<VfsHashOverrideRecord> VfsMountTable::resolve_hash(uint64_t hash64) const {
-    auto it = hash_overrides_.find(hash64);
-    if (it == hash_overrides_.end()) {
+    const VfsHashOverrideRecord* rec = find_hash(hash64);
+    if (!rec) {
         return std::nullopt;
     }
-    return it->second;
+    return *rec;
 }
 
 std::vector<VfsOverrideRecord> VfsMountTable::list_path_overrides() const {

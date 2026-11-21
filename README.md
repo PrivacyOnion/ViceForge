@@ -1,5 +1,7 @@
 <div align="center">
 
+![ViceForge Banner](docs/assets/banner.jpg)
+
 # ViceForge
 
 **Modular Forge-style mod loader, VFS overlay, C++20 SDK, and RAGE9 asset toolkit for *Grand Theft Auto VI*.**
@@ -150,6 +152,7 @@ VICEFORGE_DECLARE_MOD(MyHandlingMod, "my_handling_mod", "My Handling Mod", "1.0.
 | `vfcli inspect-rpf <file.rpf>` | Validate and display `RPF9` (`9FPR`) archive header metadata | `vfcli inspect-rpf .\common.rpf` |
 | `vfcli inspect-ttpf <file.ttpf> [--hash <hex64>]` | Inspect `RDS5`/`ETPF` texture database and query a 64-bit texture hash | `vfcli inspect-ttpf .\ttdb_graphics.ttpf --hash 0x003AB1B4158C824D` |
 | `vfcli inspect-package <game-dir>` | Parse `MicrosoftGame.Config` and report target executable presence | `vfcli inspect-package C:\Games\GTAVI` |
+| `vfcli bench [--ttpf <file.ttpf>]` | Run hot-path throughput benchmarks (`EventBus`, `VfsMountTable`, `JOAAT`, `TtpfArchive`) | `vfcli bench --ttpf .\ttdb_graphics.ttpf` |
 
 ---
 

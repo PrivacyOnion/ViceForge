@@ -81,9 +81,12 @@ struct TtpfTextureInfo {
 class TtpfArchive {
 public:
     VICEFORGE_API bool open(const std::filesystem::path& path, std::string& error);
-    VICEFORGE_API std::optional<uint32_t> find_by_hash(uint64_t hash64) const;
+    VICEFORGE_API std::optional<uint32_t> find_by_hash(uint64_t hash64) const noexcept;
     VICEFORGE_API std::optional<TtpfTextureInfo> texture_info(uint32_t index) const;
     VICEFORGE_API std::vector<TtpfChunkInfo> texture_chunks(uint32_t index) const;
+    VICEFORGE_API bool read_chunk_raw(const TtpfChunkInfo& chunk,
+                                      std::vector<uint8_t>& out,
+                                      std::string& error) const;
 
     VICEFORGE_API uint32_t texture_count() const noexcept;
     VICEFORGE_API uint32_t chunk_count() const noexcept;
@@ -92,6 +95,7 @@ public:
 
 private:
     std::filesystem::path path_;
+    uint64_t file_size_ = 0;
     uint32_t total_chunk_slots_ = 0;
     uint32_t active_entries_ = 0;
     uint32_t etpf_block_ = 0;

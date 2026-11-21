@@ -17,11 +17,6 @@ uint32_t read_u32_le(const uint8_t* p) noexcept {
            (static_cast<uint32_t>(p[3]) << 24);
 }
 
-uint64_t read_u64_le(const uint8_t* p) noexcept {
-    return static_cast<uint64_t>(read_u32_le(p)) |
-           (static_cast<uint64_t>(read_u32_le(p + 4)) << 32);
-}
-
 std::string extract_xml_attr(std::string_view xml, std::string_view tag, std::string_view attr) {
     const std::string needle = "<" + std::string(tag);
     size_t search_from = 0;
@@ -75,29 +70,11 @@ std::string extract_xml_elem_text(std::string_view xml, std::string_view tag) {
 } // namespace
 
 uint32_t joaat_lower(std::string_view text) {
-    uint32_t h = 0;
-    for (unsigned char c : text) {
-        h += static_cast<unsigned char>(std::tolower(c));
-        h += (h << 10);
-        h ^= (h >> 6);
-    }
-    h += (h << 3);
-    h ^= (h >> 11);
-    h += (h << 15);
-    return h;
+    return joaat_lower_ct(text);
 }
 
 uint32_t joaat_exact(std::string_view text) {
-    uint32_t h = 0;
-    for (unsigned char c : text) {
-        h += c;
-        h += (h << 10);
-        h ^= (h >> 6);
-    }
-    h += (h << 3);
-    h ^= (h >> 11);
-    h += (h << 15);
-    return h;
+    return joaat_exact_ct(text);
 }
 
 bool parse_rpf9_header(std::span<const uint8_t> bytes, Rpf9Header& out, std::string& error) {
@@ -265,6 +242,7 @@ uint32_t unswizzle_bc_block_index(uint32_t x,
 
 bool TtpfArchive::open(const std::filesystem::path& path, std::string& error) {
     path_ = path;
+    file_size_ = 0;
     total_chunk_slots_ = 0;
     active_entries_ = 0;
     etpf_block_ = 0;
@@ -282,6 +260,7 @@ bool TtpfArchive::open(const std::filesystem::path& path, std::string& error) {
         error = "Cannot read TTPF file or file smaller than 24-byte RDS5 header";
         return false;
     }
+    file_size_ = fsize;
 
     std::ifstream in(path, std::ios::binary);
     if (!in) {
@@ -311,30 +290,33 @@ bool TtpfArchive::open(const std::filesystem::path& path, std::string& error) {
         return false;
     }
 
-    std::vector<uint8_t> chunk_raw(static_cast<size_t>(chunk_table_bytes));
-    if (!chunk_raw.empty()) {
-        in.read(reinterpret_cast<char*>(chunk_raw.data()), static_cast<std::streamsize>(chunk_raw.size()));
-        if (in.gcount() != static_cast<std::streamsize>(chunk_raw.size())) {
+    std::vector<uint64_t> raw_entries(total_chunk_slots_);
+    if (!raw_entries.empty()) {
+        in.read(reinterpret_cast<char*>(raw_entries.data()), static_cast<std::streamsize>(chunk_table_bytes));
+        if (in.gcount() != static_cast<std::streamsize>(chunk_table_bytes)) {
             error = "Failed reading RDS5 chunk table";
             return false;
         }
     }
 
     uint32_t n_act = total_chunk_slots_;
-    while (n_act > 0 && read_u64_le(&chunk_raw[static_cast<size_t>(n_act - 1) * 8u]) == 0) {
+    while (n_act > 0 && raw_entries[n_act - 1u] == 0) {
         --n_act;
     }
     active_entries_ = n_act;
     vpages_.resize(n_act);
     disk_offsets_.resize(n_act);
     codecs_.resize(n_act);
+    if (n_act > 1u) {
+        vpage_to_chunk_.reserve(n_act);
+    }
     for (uint32_t i = 0; i < n_act; ++i) {
-        const uint64_t entry = read_u64_le(&chunk_raw[static_cast<size_t>(i) * 8u]);
+        const uint64_t entry = raw_entries[i];
         vpages_[i] = static_cast<uint32_t>((entry >> 30) & 0x3FFFFFull);
         disk_offsets_[i] = static_cast<uint64_t>(entry & 0x3FFFFFFull) * 0x100ull;
         codecs_[i] = static_cast<uint8_t>((entry >> 26) & 0xFull);
         if (i + 1u < n_act) {
-            vpage_to_chunk_[vpages_[i]] = i;
+            vpage_to_chunk_.emplace(vpages_[i], i);
         }
     }
 
@@ -363,43 +345,35 @@ bool TtpfArchive::open(const std::filesystem::path& path, std::string& error) {
         return false;
     }
 
+    static_assert(sizeof(RawDescriptor) == 16 && alignof(RawDescriptor) == 4,
+                  "RawDescriptor layout must match packed ETPF table");
     descriptors_.resize(ntex);
     hashes_.resize(ntex);
     if (ntex > 0) {
-        std::vector<uint8_t> buf(static_cast<size_t>(ntex) * 16u);
-        in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
-        if (in.gcount() != static_cast<std::streamsize>(buf.size())) {
+        const std::streamsize desc_bytes = static_cast<std::streamsize>(ntex) * 16;
+        in.read(reinterpret_cast<char*>(descriptors_.data()), desc_bytes);
+        if (in.gcount() != desc_bytes) {
             error = "Failed reading ETPF descriptors";
             return false;
         }
-        for (uint32_t i = 0; i < ntex; ++i) {
-            const uint8_t* p = &buf[static_cast<size_t>(i) * 16u];
-            descriptors_[i] = RawDescriptor{
-                read_u32_le(p + 0),
-                read_u32_le(p + 4),
-                read_u32_le(p + 8),
-                read_u32_le(p + 12)
-            };
-        }
 
-        std::vector<uint8_t> hbuf(static_cast<size_t>(ntex) * 8u);
-        in.read(reinterpret_cast<char*>(hbuf.data()), static_cast<std::streamsize>(hbuf.size()));
-        if (in.gcount() != static_cast<std::streamsize>(hbuf.size())) {
+        const std::streamsize hash_bytes = static_cast<std::streamsize>(ntex) * 8;
+        in.read(reinterpret_cast<char*>(hashes_.data()), hash_bytes);
+        if (in.gcount() != hash_bytes) {
             error = "Failed reading ETPF texture hashes";
             return false;
         }
+
         hash_to_index_.reserve(ntex);
         for (uint32_t i = 0; i < ntex; ++i) {
-            const uint64_t h = read_u64_le(&hbuf[static_cast<size_t>(i) * 8u]);
-            hashes_[i] = h;
-            hash_to_index_.emplace(h, i);
+            hash_to_index_.emplace(hashes_[i], i);
         }
     }
 
     return true;
 }
 
-std::optional<uint32_t> TtpfArchive::find_by_hash(uint64_t hash64) const {
+std::optional<uint32_t> TtpfArchive::find_by_hash(uint64_t hash64) const noexcept {
     auto it = hash_to_index_.find(hash64);
     if (it == hash_to_index_.end()) {
         return std::nullopt;
@@ -455,6 +429,38 @@ std::vector<TtpfChunkInfo> TtpfArchive::texture_chunks(uint32_t index) const {
         });
     }
     return out;
+}
+
+bool TtpfArchive::read_chunk_raw(const TtpfChunkInfo& chunk,
+                                 std::vector<uint8_t>& out,
+                                 std::string& error) const {
+    if (chunk.index + 1u >= active_entries_) {
+        error = "Chunk index out of bounds";
+        return false;
+    }
+    const uint64_t start = disk_offsets_[chunk.index];
+    const uint64_t end = disk_offsets_[chunk.index + 1u];
+    if (end < start || end > file_size_) {
+        error = "Chunk disk range exceeds TTPF file bounds";
+        return false;
+    }
+    const uint64_t size = end - start;
+    out.resize(static_cast<size_t>(size));
+    if (size == 0) {
+        return true;
+    }
+    std::ifstream in(path_, std::ios::binary);
+    if (!in) {
+        error = "Cannot open TTPF file for chunk read";
+        return false;
+    }
+    in.seekg(static_cast<std::streamoff>(start), std::ios::beg);
+    in.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(size));
+    if (in.gcount() != static_cast<std::streamsize>(size)) {
+        error = "Truncated read for TTPF chunk";
+        return false;
+    }
+    return true;
 }
 
 uint32_t TtpfArchive::texture_count() const noexcept {

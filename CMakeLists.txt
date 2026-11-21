@@ -80,6 +80,7 @@ endfunction()
 viceforge_add_test(test_manifest_resolver tests/test_manifest_resolver.cpp)
 viceforge_add_test(test_vfs_registry tests/test_vfs_registry.cpp)
 viceforge_add_test(test_rage9_containers tests/test_rage9_containers.cpp)
+viceforge_add_test(test_optimizations tests/test_optimizations.cpp)
 viceforge_add_test(test_mod_loader_e2e tests/test_mod_loader_e2e.cpp
     "$<TARGET_FILE:sample_mod>"
     "${CMAKE_CURRENT_SOURCE_DIR}/examples/sample_mod/viceforge.mod.json"

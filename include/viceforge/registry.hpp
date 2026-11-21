@@ -1,8 +1,10 @@
 #pragma once
 
 #include "viceforge/export.h"
+#include "viceforge/hash_utils.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -28,7 +30,7 @@ struct ResourceId {
         ResourceId id;
         id.namespace_name = std::string(qualified.substr(0, colon));
         id.path = std::string(qualified.substr(colon + 1));
-        id.hash = joaat_lower(id.to_string());
+        id.hash = joaat_lower_ct(id.to_string());
         return id;
     }
 
@@ -37,7 +39,7 @@ struct ResourceId {
             throw std::invalid_argument("ResourceId namespace and path must be non-empty");
         }
         ResourceId id{std::string(ns), std::string(p), 0};
-        id.hash = joaat_lower(id.to_string());
+        id.hash = joaat_lower_ct(id.to_string());
         return id;
     }
 
@@ -52,6 +54,12 @@ template <typename T>
 class Registry {
 public:
     explicit Registry(std::string registry_name) : name_(std::move(registry_name)) {}
+
+    void reserve(size_t count) {
+        entries_.reserve(count);
+        by_key_.reserve(count);
+        by_hash_.reserve(count);
+    }
 
     bool register_entry(const ResourceId& id, T value, std::string* error = nullptr) {
         if (frozen_) {
@@ -81,7 +89,7 @@ public:
     }
 
     const T* find(std::string_view qualified_key) const {
-        auto it = by_key_.find(std::string(qualified_key));
+        auto it = by_key_.find(qualified_key);
         if (it == by_key_.end()) {
             return nullptr;
         }
@@ -110,7 +118,7 @@ private:
     std::string name_;
     bool frozen_ = false;
     std::vector<Entry> entries_;
-    std::unordered_map<std::string, size_t> by_key_;
+    std::unordered_map<std::string, size_t, TransparentStringHash, std::equal_to<>> by_key_;
     std::unordered_map<uint32_t, size_t> by_hash_;
 };
 
@@ -120,11 +128,14 @@ public:
     DeferredRegister(Registry<T>& target, std::string mod_namespace)
         : target_(target), mod_namespace_(std::move(mod_namespace)) {}
 
+    void reserve(size_t count) { pending_.reserve(count); }
+
     void add(std::string path, T value) {
         pending_.push_back(PendingEntry{ResourceId::make(mod_namespace_, path), std::move(value)});
     }
 
     bool register_all(std::string* error = nullptr) {
+        target_.reserve(target_.entries().size() + pending_.size());
         for (auto& item : pending_) {
             if (!target_.register_entry(item.id, item.value, error)) {
                 return false;

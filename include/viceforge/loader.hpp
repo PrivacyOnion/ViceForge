@@ -3,6 +3,7 @@
 #include "viceforge/abi.h"
 #include "viceforge/events.hpp"
 #include "viceforge/export.h"
+#include "viceforge/hash_utils.hpp"
 #include "viceforge/manifest.hpp"
 #include "viceforge/runtime_bridge.hpp"
 #include "viceforge/vfs.hpp"
@@ -13,6 +14,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace viceforge {
@@ -80,6 +82,8 @@ private:
     EventBus event_bus_;
     VfHostApi host_api_{};
     std::vector<LoadedModHandle> loaded_mods_;
+    std::unordered_map<std::string, size_t, TransparentStringHash, std::equal_to<>> mod_index_by_id_;
+    std::vector<VfModEventFn> active_event_callbacks_;
     std::vector<LogEntry> logs_;
     std::function<void(const LogEntry&)> log_sink_;
 };

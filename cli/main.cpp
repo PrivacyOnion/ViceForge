@@ -1,7 +1,9 @@
 #include "viceforge/loader.hpp"
 #include "viceforge/rage9.hpp"
+#include "viceforge/registry.hpp"
 
 #include <charconv>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -22,7 +24,8 @@ void print_usage() {
               << "  vfcli run-headless <mods-dir>\n"
               << "  vfcli inspect-rpf <file.rpf>\n"
               << "  vfcli inspect-ttpf <file.ttpf> [--hash <hex64>]\n"
-              << "  vfcli inspect-package <game-dir>\n";
+              << "  vfcli inspect-package <game-dir>\n"
+              << "  vfcli bench [--ttpf <file.ttpf>]\n";
 }
 
 bool is_valid_id(std::string_view id) {
@@ -333,6 +336,128 @@ int cmd_inspect_package(int argc, char** argv) {
     return 0;
 }
 
+int cmd_bench(int argc, char** argv) {
+    std::filesystem::path ttpf_path;
+    for (int i = 2; i < argc; ++i) {
+        if (std::string_view(argv[i]) == "--ttpf") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --ttpf requires a file path\n";
+                return 2;
+            }
+            ttpf_path = std::filesystem::path(argv[++i]);
+        } else {
+            std::cerr << "Error: unknown argument '" << argv[i] << "'\n";
+            return 2;
+        }
+    }
+
+    using clock = std::chrono::steady_clock;
+    auto report_rate = [](const char* label, uint64_t ops, clock::duration elapsed) {
+        const double ms = std::chrono::duration<double, std::milli>(elapsed).count();
+        const double sec = std::chrono::duration<double>(elapsed).count();
+        const double ops_per_sec = sec > 0.0 ? static_cast<double>(ops) / sec : 0.0;
+        std::cout << "  " << std::left << std::setw(28) << label
+                  << std::right << std::setw(9) << std::fixed << std::setprecision(3) << ms << " ms"
+                  << "  (" << std::fixed << std::setprecision(0) << ops_per_sec << " ops/s)\n";
+    };
+
+    std::cout << "ViceForge hot-path benchmarks:\n";
+    uint64_t sink = 0;
+
+    // 1. EventBus::post benchmark (200k iterations, 4 prioritized subscribers)
+    {
+        struct TickEv { uint64_t counter = 0; };
+        viceforge::EventBus bus;
+        for (int p = 0; p < 4; ++p) {
+            bus.subscribe<TickEv>(static_cast<viceforge::EventPriority>(p), [](TickEv& ev) {
+                ev.counter += 1u;
+            });
+        }
+        TickEv ev{};
+        constexpr uint64_t kIters = 200000;
+        const auto t0 = clock::now();
+        for (uint64_t i = 0; i < kIters; ++i) {
+            bus.post(ev);
+        }
+        const auto t1 = clock::now();
+        sink += ev.counter;
+        report_rate("EventBus::post (4 listeners)", kIters, t1 - t0);
+    }
+
+    // 2. VfsMountTable::find zero-alloc normalized lookup benchmark (200k iterations)
+    {
+        viceforge::VfsMountTable vfs;
+        vfs.reserve(64, 64);
+        std::string err;
+        for (uint32_t i = 0; i < 64; ++i) {
+            vfs.register_override("common:/data/file_" + std::to_string(i) + ".meta",
+                                  "mods/test/file.meta", "bench_mod", 1, false, &err);
+            vfs.register_hash_override(0x1000000000000000ull + i,
+                                       "mods/test/tex.dds", "bench_mod", 1, false, &err);
+        }
+
+        constexpr uint64_t kIters = 200000;
+        const auto t0 = clock::now();
+        for (uint64_t i = 0; i < kIters; ++i) {
+            const auto* rec = vfs.find("common:/data/file_17.meta");
+            sink += rec ? rec->priority : 0u;
+        }
+        const auto t1 = clock::now();
+        report_rate("VfsMountTable::find (norm)", kIters, t1 - t0);
+
+        const auto h0 = clock::now();
+        for (uint64_t i = 0; i < kIters; ++i) {
+            const auto* rec = vfs.find_hash(0x1000000000000011ull);
+            sink += rec ? rec->priority : 0u;
+        }
+        const auto h1 = clock::now();
+        report_rate("VfsMountTable::find_hash", kIters, h1 - h0);
+    }
+
+    // 3. joaat_lower benchmark (200k iterations)
+    {
+        constexpr std::string_view kSample = "levels/vice_city/downtown/handling.meta";
+        constexpr uint64_t kIters = 200000;
+        const auto t0 = clock::now();
+        for (uint64_t i = 0; i < kIters; ++i) {
+            sink += viceforge::joaat_lower(kSample);
+        }
+        const auto t1 = clock::now();
+        report_rate("joaat_lower (40 bytes)", kIters, t1 - t0);
+    }
+
+    // 4. Optional TTPF open + 100k hash lookups
+    if (!ttpf_path.empty()) {
+        viceforge::TtpfArchive archive;
+        std::string err;
+        const auto t0 = clock::now();
+        if (!archive.open(ttpf_path, err)) {
+            std::cerr << "Error: " << err << "\n";
+            return 1;
+        }
+        const auto t1 = clock::now();
+        const double open_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        std::cout << "  TtpfArchive::open (" << archive.texture_count() << " tex)   "
+                  << std::setw(9) << std::fixed << std::setprecision(3) << open_ms << " ms\n";
+
+        if (archive.texture_count() > 0) {
+            const auto first = archive.texture_info(0);
+            const uint64_t h = first ? first->hash64 : 0ull;
+            constexpr uint64_t kLookups = 100000;
+            const auto q0 = clock::now();
+            for (uint64_t i = 0; i < kLookups; ++i) {
+                const auto idx = archive.find_by_hash(h);
+                sink += idx.value_or(0u);
+            }
+            const auto q1 = clock::now();
+            report_rate("TtpfArchive::find_by_hash", kLookups, q1 - q0);
+        }
+    }
+
+    std::cout << "Benchmark digest: 0x" << std::hex << std::uppercase << sink << std::dec << "\n";
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -358,6 +483,9 @@ int main(int argc, char** argv) {
     }
     if (cmd == "inspect-package") {
         return cmd_inspect_package(argc, argv);
+    }
+    if (cmd == "bench") {
+        return cmd_bench(argc, argv);
     }
     if (cmd == "--help" || cmd == "-h") {
         print_usage();

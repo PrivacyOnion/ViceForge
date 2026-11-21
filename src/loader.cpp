@@ -118,6 +118,14 @@ bool ModLoader::load_all(const std::filesystem::path& mods_root,
         return false;
     }
 
+    size_t total_mounts = 0;
+    for (const auto& manifest : report.ordered_mods) {
+        total_mounts += manifest.asset_mounts.size();
+    }
+    vfs_.reserve(total_mounts, 0);
+    loaded_mods_.reserve(report.ordered_mods.size());
+    mod_index_by_id_.reserve(report.ordered_mods.size());
+
     for (size_t i = 0; i < report.ordered_mods.size(); ++i) {
         const auto& manifest = report.ordered_mods[i];
         const uint32_t priority = static_cast<uint32_t>(i + 1u);
@@ -178,10 +186,12 @@ bool ModLoader::load_all(const std::filesystem::path& mods_root,
             }
         }
 
+        mod_index_by_id_.emplace(handle.manifest.id, loaded_mods_.size());
         loaded_mods_.push_back(std::move(handle));
     }
 
     if (!mount_only) {
+        active_event_callbacks_.reserve(loaded_mods_.size());
         for (auto& handle : loaded_mods_) {
             if (handle.fn_init) {
                 const int32_t rc = handle.fn_init(&host_api_);
@@ -192,6 +202,9 @@ bool ModLoader::load_all(const std::filesystem::path& mods_root,
                     return false;
                 }
                 handle.initialized = true;
+                if (handle.fn_event) {
+                    active_event_callbacks_.push_back(handle.fn_event);
+                }
             }
         }
 
@@ -207,12 +220,10 @@ void ModLoader::dispatch_event(VfEventPayload& payload) {
     if (payload.cancellable && payload.cancelled) {
         return;
     }
-    for (const auto& handle : loaded_mods_) {
-        if (handle.initialized && handle.fn_event) {
-            handle.fn_event(&payload);
-            if (payload.cancellable && payload.cancelled) {
-                break;
-            }
+    for (VfModEventFn fn : active_event_callbacks_) {
+        fn(&payload);
+        if (payload.cancellable && payload.cancelled) {
+            break;
         }
     }
 }
@@ -223,6 +234,8 @@ void ModLoader::shutdown() {
         dispatch_event(stop_event);
     }
 
+    active_event_callbacks_.clear();
+    mod_index_by_id_.clear();
     for (auto it = loaded_mods_.rbegin(); it != loaded_mods_.rend(); ++it) {
         if (it->initialized && it->fn_shutdown) {
             it->fn_shutdown();
@@ -253,12 +266,7 @@ const std::vector<LoadedModHandle>& ModLoader::loaded_mods() const noexcept { re
 const std::vector<LogEntry>& ModLoader::logs() const noexcept { return logs_; }
 
 bool ModLoader::is_mod_loaded(std::string_view mod_id) const {
-    for (const auto& handle : loaded_mods_) {
-        if (handle.manifest.id == mod_id) {
-            return true;
-        }
-    }
-    return false;
+    return mod_index_by_id_.find(mod_id) != mod_index_by_id_.end();
 }
 
 void ModLoader::record_log(VfLogLevel level, std::string source, std::string message) {
@@ -287,11 +295,8 @@ int32_t ModLoader::host_register_asset_override(void* user_data,
         return VF_ERR_INVALID_ARG;
     }
     uint32_t priority = 1;
-    for (size_t i = 0; i < self->loaded_mods_.size(); ++i) {
-        if (self->loaded_mods_[i].manifest.id == mod_id) {
-            priority = static_cast<uint32_t>(i + 1u);
-            break;
-        }
+    if (auto it = self->mod_index_by_id_.find(std::string_view(mod_id)); it != self->mod_index_by_id_.end()) {
+        priority = static_cast<uint32_t>(it->second + 1u);
     }
     std::string err;
     if (!self->vfs_.register_override(virtual_path, std::filesystem::path(host_file_path),
@@ -311,11 +316,8 @@ int32_t ModLoader::host_register_hash_override(void* user_data,
         return VF_ERR_INVALID_ARG;
     }
     uint32_t priority = 1;
-    for (size_t i = 0; i < self->loaded_mods_.size(); ++i) {
-        if (self->loaded_mods_[i].manifest.id == mod_id) {
-            priority = static_cast<uint32_t>(i + 1u);
-            break;
-        }
+    if (auto it = self->mod_index_by_id_.find(std::string_view(mod_id)); it != self->mod_index_by_id_.end()) {
+        priority = static_cast<uint32_t>(it->second + 1u);
     }
     std::string err;
     if (!self->vfs_.register_hash_override(hash64, std::filesystem::path(host_file_path),

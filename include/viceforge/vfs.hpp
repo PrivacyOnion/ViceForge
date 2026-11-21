@@ -1,9 +1,11 @@
 #pragma once
 
 #include "viceforge/export.h"
+#include "viceforge/hash_utils.hpp"
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -39,6 +41,9 @@ struct VfsConflict {
 class VfsMountTable {
 public:
     VICEFORGE_API static std::string normalize_virtual_path(std::string_view raw_path);
+    VICEFORGE_API static bool is_normalized_virtual_path(std::string_view path) noexcept;
+
+    VICEFORGE_API void reserve(size_t path_count, size_t hash_count);
 
     VICEFORGE_API bool register_override(std::string_view virtual_path,
                                          const std::filesystem::path& host_file_path,
@@ -54,6 +59,9 @@ public:
                                               bool pinned = false,
                                               std::string* error = nullptr);
 
+    VICEFORGE_API const VfsOverrideRecord* find(std::string_view virtual_path) const;
+    VICEFORGE_API const VfsHashOverrideRecord* find_hash(uint64_t hash64) const noexcept;
+
     VICEFORGE_API std::optional<VfsOverrideRecord> resolve(std::string_view virtual_path) const;
     VICEFORGE_API std::optional<VfsHashOverrideRecord> resolve_hash(uint64_t hash64) const;
 
@@ -63,7 +71,7 @@ public:
     VICEFORGE_API void clear();
 
 private:
-    std::unordered_map<std::string, VfsOverrideRecord> path_overrides_;
+    std::unordered_map<std::string, VfsOverrideRecord, TransparentStringHash, std::equal_to<>> path_overrides_;
     std::unordered_map<uint64_t, VfsHashOverrideRecord> hash_overrides_;
     std::vector<VfsConflict> conflicts_;
 };
