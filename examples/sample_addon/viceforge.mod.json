@@ -1,0 +1,23 @@
+{
+  "id": "sample_addon",
+  "name": "ViceForge Sample Addon",
+  "version": "1.1.0",
+  "entry_dll": "sample_addon.dll",
+  "dependencies": [
+    {
+      "id": "sample_mod",
+      "version": ">=1.0.0"
+    }
+  ],
+  "conflicts": [],
+  "load_before": [],
+  "load_after": [
+    "sample_mod"
+  ],
+  "asset_mounts": [
+    {
+      "virtual_path": "common:/data/viceforge_sample.meta",
+      "source": "assets/addon.meta"
+    }
+  ]
+}

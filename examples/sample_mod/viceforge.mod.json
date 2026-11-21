@@ -1,0 +1,16 @@
+{
+  "id": "sample_mod",
+  "name": "ViceForge Sample Base Mod",
+  "version": "1.0.0",
+  "entry_dll": "sample_mod.dll",
+  "dependencies": [],
+  "conflicts": [],
+  "load_before": [],
+  "load_after": [],
+  "asset_mounts": [
+    {
+      "virtual_path": "common:/data/viceforge_sample.meta",
+      "source": "assets/sample.meta"
+    }
+  ]
+}

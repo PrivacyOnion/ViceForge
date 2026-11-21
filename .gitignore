@@ -1,0 +1,17 @@
+build/
+out/
+.vs/
+.cache/
+__pycache__/
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.exe
+*.dll
+*.user
+*.suo
+*.log
+CMakeUserPresets.json
